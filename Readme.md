@@ -3,7 +3,7 @@ Extension Manual
 
 Description:
 -----------
-newsletter registration extension to tt_address made in Extbase + Fluid for Typo3.
+Newsletter registration extension to tt_address made in Extbase + Fluid for Typo3.
 Similar to direct_mail_subscription except based on Extbase.
 
 Features:
