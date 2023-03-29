@@ -26,6 +26,8 @@ namespace AFM\Registeraddress\Controller;
  ***************************************************************/
 
 use AFM\Registeraddress\Domain\Model\Address;
+use AFM\Registeraddress\Domain\Repository\AddressRepository;
+use AFM\Registeraddress\Event\InitializeCreateActionEvent;
 use TYPO3\CMS\Core\Mail\MailMessage;
 use TYPO3\CMS\Core\Messaging\AbstractMessage;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
@@ -53,10 +55,29 @@ class AddressController extends ActionController
     /**
      * addressRepository
      *
-     * @var \AFM\Registeraddress\Domain\Repository\AddressRepository
-     * @inject
+     * @var AddressRepository
      */
     protected $addressRepository;
+
+    public function injectAddressRepository(AddressRepository $addressRepository): void
+    {
+        $this->addressRepository = $addressRepository;
+    }
+
+    /**
+     * persistenceManager
+     *
+     * @var PersistenceManager
+     */
+    protected $persistenceManager;
+
+    /**
+     * @param PersistenceManager $persistenceManager
+     */
+    public function injectPersistenceManager(PersistenceManager $persistenceManager): void
+    {
+        $this->persistenceManager = $persistenceManager;
+    }
 
     /**
      * This creates another stand-alone instance of the Fluid view to render a template
@@ -122,10 +143,10 @@ class AddressController extends ActionController
             ->setSubject($subject);
 
         if ($bodyHTML !== '' && $bodyHTML !== NULL ) {
-            $mail->addPart($bodyHTML, 'text/html');
+            $mail->html($bodyHTML);
         }
         if ($bodyPlain !== '' && $bodyPlain !== NULL ) {
-            $mail->addPart($bodyPlain, 'text/plain');
+            $mail->text($bodyPlain);
         }
 
         return $mail->send();
@@ -143,8 +164,12 @@ class AddressController extends ActionController
      * @throws \InvalidArgumentException
      * @throws \TYPO3\CMS\Extbase\Mvc\Exception\InvalidExtensionNameException
      */
-    private function sendResponseMail( $recipientmails = '', $templateName, array $data = NULL, $type = self::MAILFORMAT_TXT, $subjectSuffix = '' )
+    protected function sendResponseMail( $recipientmails = '', $templateName, array $data = NULL, $type = self::MAILFORMAT_TXT, $subjectSuffix = '' )
     {
+        $oldSpamProtectSetting = $GLOBALS['TSFE']->spamProtectEmailAddresses;
+        // disable spamProtectEmailAddresses setting for e-mails
+        $GLOBALS['TSFE']->spamProtectEmailAddresses = 0;
+
         $recipients = explode(',', $recipientmails);
 
         $from = [$this->settings['sendermail'] => $this->settings['sendername']];
@@ -193,6 +218,9 @@ class AddressController extends ActionController
                 $mailText
             );
         }
+
+        // revert spamProtectSettings
+        $GLOBALS['TSFE']->spamProtectEmailAddresses = $oldSpamProtectSetting;
     }
 
 
@@ -228,7 +256,7 @@ class AddressController extends ActionController
      * action form only
      *
      * @param Address $newAddress
-     * @dontvalidate $newAddress
+     * @TYPO3\CMS\Extbase\Annotation\IgnoreValidation
      * @return void
      */
     public function formOnlyAction(Address $newAddress = NULL)
@@ -240,7 +268,7 @@ class AddressController extends ActionController
      * action new
      *
      * @param Address $newAddress
-     * @dontvalidate $newAddress
+     * @TYPO3\CMS\Extbase\Annotation\IgnoreValidation
      * @return void
      */
     public function newAction(Address $newAddress = NULL)
@@ -248,6 +276,11 @@ class AddressController extends ActionController
         $this->view->assign('newAddress', $newAddress);
     }
 
+
+    public function initializeCreateAction(): void
+    {
+        $this->eventDispatcher->dispatch(new InitializeCreateActionEvent($this->arguments, $this->request));
+    }
 
     /**
      * action create
@@ -275,10 +308,7 @@ class AddressController extends ActionController
             $this->addressRepository->add($newAddress);
 
             $data = [
-                'gender' => $newAddress->getGender(),
-                'vorname' => $newAddress->getFirstName(),
-                'nachname' => $newAddress->getLastName(),
-                'consent' => $newAddress->getConsent(),
+                'address' => $newAddress,
                 'hash' => $regHash
             ];
 
@@ -293,8 +323,7 @@ class AddressController extends ActionController
                 LocalizationUtility::translate('mail.registration.subjectsuffix', 'registeraddress')
             );
 
-            $persistenceManager = $this->objectManager->get(PersistenceManager::class);
-            $persistenceManager->persistAll();
+            $this->persistenceManager->persistAll();
         }
 
         $this->view->assign('address', $newAddress);
@@ -315,9 +344,7 @@ class AddressController extends ActionController
 
         if ($address && $address->getUid() == $uid) {
             $data = [
-                'gender' => $address->getGender(),
-                'vorname' => $address->getFirstName(),
-                'nachname' => $address->getLastName(),
+                'address' => $address,
                 'hash' => $address->getRegisteraddresshash()
             ];
 
@@ -358,9 +385,7 @@ class AddressController extends ActionController
         }
         if ($address) {
             $data = [
-                'gender' => $address->getGender(),
-                'vorname' => $address->getFirstName(),
-                'nachname' => $address->getLastName(),
+                'address' => $address,
                 'hash' => $address->getRegisteraddresshash()
             ];
 
@@ -380,8 +405,9 @@ class AddressController extends ActionController
     /**
      * action approve
      *
-     * @param \string $hash
-     * @validate $hash NotEmpty
+     * @param string $hash
+     * @TYPO3\CMS\Extbase\Annotation\Validate("NotEmpty", param="hash")
+     * @param boolean $doApprove
      * @return void
      * @throws \InvalidArgumentException
      * @throws \TYPO3\CMS\Extbase\SignalSlot\Exception\InvalidSlotException
@@ -390,42 +416,19 @@ class AddressController extends ActionController
      * @throws \TYPO3\CMS\Extbase\SignalSlot\Exception\InvalidSlotReturnException
      * @throws \TYPO3\CMS\Extbase\Mvc\Exception\InvalidExtensionNameException
      */
-    public function approveAction($hash = NULL)
+    public function approveAction($hash = NULL, $doApprove = false)
     {
+        /** @var Address $address */
         $address = $this->addressRepository->findOneByRegisteraddresshashIgnoreHidden($hash);
 
-        if ($address) {
+        $this->view->assign('hash', $hash);
+
+        if ($address && $address->getHidden() && $doApprove) {
             $address->setHidden(false);
             $address->setModuleSysDmailHtml(true);
 
-            // create anrede
-            if ( $address->getLastName() ) {
-                if ($address->getGender() == 'm') {
-                    $eigeneAnrede = LocalizationUtility::translate(
-                        'salutationgeneration.lastname.m',
-                        'registeraddress'
-                    ).$address->getLastName();
-
-                } elseif ($address->getGender() == 'f') {
-                    $eigeneAnrede = LocalizationUtility::translate(
-                        'salutationgeneration.lastname.f',
-                        'registeraddress'
-                    ).$address->getLastName();
-                }
-            } elseif ( $address->getFirstName() ) {
-                $eigeneAnrede = LocalizationUtility::translate(
-                    'salutationgeneration.onlyfirstname',
-                    'registeraddress'
-                ).$address->getFirstName();
-            } else {
-                $eigeneAnrede = LocalizationUtility::translate(
-                    'salutationgeneration.other',
-                    'registeraddress'
-                );
-            }
+            $eigeneAnrede = $this->generateEigeneAnrede($address);
             $address->setEigeneAnrede($eigeneAnrede);
-
-            $this->view->assign('address', $address);
 
             $this->addressRepository->update($address);
 
@@ -463,16 +466,20 @@ class AddressController extends ActionController
             $signalSlotDispatcher = GeneralUtility::makeInstance(Dispatcher::class);
             $signalSlotDispatcher->dispatch(__CLASS__, 'approveBeforePersist', [$address]);
 
-            $persistenceManager = $this->objectManager->get(PersistenceManager::class);
-            $persistenceManager->persistAll();
+            $this->persistenceManager->persistAll();
+        } else {
+            $this->view->assign('alreadyApproved',true);
         }
+
+        $this->view->assign('address', $address);
+        $this->view->assign('doApprove', $doApprove);
     }
 
     /**
      * action edit
      *
      * @param \string $hash
-     * @validate $hash NotEmpty
+     * @TYPO3\CMS\Extbase\Annotation\Validate("NotEmpty", param="hash")
      * @return void
      */
     public function editAction( $hash = NULL )
@@ -506,8 +513,25 @@ class AddressController extends ActionController
         $addressOld = $this->addressRepository->findOneByRegisteraddresshashIgnoreHidden($hash);
         $address->setEmail($addressOld->getEmail());
 
+        $eigeneAnrede = $this->generateEigeneAnrede($address);
+        $address->setEigeneAnrede($eigeneAnrede);
+
         $signalSlotDispatcher = GeneralUtility::makeInstance(Dispatcher::class);
         $signalSlotDispatcher->dispatch(__CLASS__, 'updateBeforePersist', [$address]);
+
+        // send email to admin with updated data
+        if ($this->settings['adminmail'] && !empty($this->settings['updateSubject'])) {
+            $adminRecipient = $this->settings['adminmail'];
+            $subject = $this->settings['updateSubject'];
+
+            $this->sendResponseMail(
+                $adminRecipient,
+                'Address/Admin/MailAdminUpdate',
+                ['address' => $address],
+                self::MAILFORMAT_TXT,
+                $subject
+            );
+        }
 
         $this->addressRepository->update($address);
 
@@ -532,7 +556,8 @@ class AddressController extends ActionController
      * action delete
      *
      * @param \string $hash
-     * @validate $hash NotEmpty
+     * @TYPO3\CMS\Extbase\Annotation\Validate("NotEmpty", param="hash")
+     * @param boolean $doDelete
      * @return void
      * @throws \InvalidArgumentException
      * @throws \TYPO3\CMS\Extbase\SignalSlot\Exception\InvalidSlotException
@@ -540,12 +565,12 @@ class AddressController extends ActionController
      * @throws \TYPO3\CMS\Extbase\Persistence\Exception\IllegalObjectTypeException
      * @throws \TYPO3\CMS\Extbase\Mvc\Exception\InvalidExtensionNameException
      */
-    public function deleteAction($hash = NULL)
+    public function deleteAction($hash = NULL, $doDelete = false)
     {
         $address = $this->addressRepository->findOneByRegisteraddresshashIgnoreHidden($hash);
+        $this->view->assign('hash', $hash);
 
-        if ($address) {
-            $this->view->assign('address', $address);
+        if ($address && $doDelete) {
 
             if ($this->settings['sendDeleteApproveMails']) {
                 $data = [
@@ -581,5 +606,42 @@ class AddressController extends ActionController
             $this->addressRepository->remove($address);
 
         }
+        $this->view->assign('address', $address);
+        $this->view->assign('doDelete', $doDelete);
+    }
+
+    /**
+     * Generates content for field eigene_anrede
+     *
+     * @param Address $address
+     * @return string|null
+     */
+    protected function generateEigeneAnrede($address)
+    {
+        if ($address->getLastName()) {
+            if ($address->getGender() === 'm') {
+                $eigeneAnrede = LocalizationUtility::translate(
+                        'salutationgeneration.lastname.m',
+                        'registeraddress'
+                    ) . $address->getLastName();
+
+            } elseif ($address->getGender() === 'f') {
+                $eigeneAnrede = LocalizationUtility::translate(
+                        'salutationgeneration.lastname.f',
+                        'registeraddress'
+                    ) . $address->getLastName();
+            }
+        } elseif ($address->getFirstName()) {
+            $eigeneAnrede = LocalizationUtility::translate(
+                    'salutationgeneration.onlyfirstname',
+                    'registeraddress'
+                ) . $address->getFirstName();
+        } else {
+            $eigeneAnrede = LocalizationUtility::translate(
+                'salutationgeneration.other',
+                'registeraddress'
+            );
+        }
+        return $eigeneAnrede;
     }
 }

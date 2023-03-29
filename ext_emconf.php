@@ -10,6 +10,7 @@
  * "version" and "dependencies" must not be touched!
  ***************************************************************/
 
+/** @noinspection PhpUndefinedVariableInspection */
 $EM_CONF[$_EXTKEY] = array(
 	'title' => 'Register to tt_address',
 	'description' => 'Simple Registration for tt_address for newsletter registration',
@@ -27,11 +28,11 @@ $EM_CONF[$_EXTKEY] = array(
 	'modify_tables' => '',
 	'clearCacheOnLoad' => 0,
 	'lockType' => '',
-	'version' => '1.0.13',
+	'version' => '4.1.0',
 	'constraints' => array(
 		'depends' => array(
-			'typo3' => '6.2.0-8.7.99',
-			'tt_address' => '3.1.0-3.3.99',
+			'typo3' => '11.5.0 - 11.5.99',
+			'tt_address' => '5.2.0-7.99.99',
 		),
 		'conflicts' => array(
 		),
